@@ -1,0 +1,322 @@
+# ============================================================
+#  SISTEMA DE CORRESPONDÊNCIA PATRIMONIAL COM MACHINE LEARNING
+#  Google Colab — Inventário Patrimonial
+# ============================================================
+
+# ── CÉLULA 1: Instalação de dependências ──────────────────────────────────────
+# Execute esta célula primeiro
+
+# !pip install -q sentence-transformers scikit-learn pandas openpyxl
+
+
+# ── CÉLULA 2: Imports ─────────────────────────────────────────────────────────
+
+import pandas as pd
+import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
+from sentence_transformers import SentenceTransformer
+import warnings
+warnings.filterwarnings("ignore")
+
+print("✅ Bibliotecas carregadas com sucesso!")
+
+
+# ── CÉLULA 3: Dados de exemplo (substitua pelo carregamento real) ──────────────
+#
+# OPÇÃO A — Dados de exemplo embutidos (para testar o sistema rapidamente)
+# OPÇÃO B — Carregar de arquivo Excel/CSV (descomente o bloco correspondente)
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── OPÇÃO A: Dados de exemplo ─────────────────────────────────────────────────
+
+# Base de dados principal: patrimônios conhecidos
+dados_base = pd.DataFrame({
+    "Patrimônio": [
+        10001, 10002, 10003, 10004, 10005,
+        10006, 10007, 10008, 10009, 10010,
+    ],
+    "Descrição": [
+        "Cadeira giratória com rodízios, cor preta, estofada",
+        "Mesa de escritório em L, madeira MDF, cor carvalho",
+        "Monitor LCD 24 polegadas, marca Dell, resolução Full HD",
+        "Notebook Dell Inspiron 15, processador i5, 8GB RAM",
+        "Impressora multifuncional HP LaserJet, preto e branco",
+        "Armário de aço com 4 gavetas, cor cinza",
+        "Projetor Epson 3000 lumens, HDMI, controle remoto",
+        "Ar-condicionado split 12000 BTUs, inverter, marca LG",
+        "Frigobar 120 litros, inox, marca Brastemp",
+        "Televisor LED 50 polegadas, smart TV, Samsung",
+    ]
+})
+
+# Bens não encontrados no inventário (apenas os números de patrimônio)
+patrimonios_nao_encontrados = pd.DataFrame({
+    "Patrimônio": [10002, 10005, 10008]
+})
+
+# Bens sem número de patrimônio (apenas descrição)
+bens_sem_numero = pd.DataFrame({
+    "Descrição": [
+        "Mesa em L para escritório, cor amadeirada, MDF",
+        "Impressora laser HP, monocromática, multifuncional",
+        "Ar condicionado LG inverter, 12 mil BTUs, split",
+    ]
+})
+
+# ── OPÇÃO B: Carregar de arquivo Excel ────────────────────────────────────────
+# Descomente e ajuste os nomes das abas/colunas conforme seu arquivo.
+#
+# from google.colab import files
+# uploaded = files.upload()  # Faz upload do arquivo
+# nome_arquivo = list(uploaded.keys())[0]
+#
+# dados_base = pd.read_excel(
+#     nome_arquivo,
+#     sheet_name="Base",          # ← nome da aba com a base de dados
+#     usecols=["Patrimônio", "Descrição"]
+# )
+# patrimonios_nao_encontrados = pd.read_excel(
+#     nome_arquivo,
+#     sheet_name="Não Encontrados",  # ← aba com patrimônios não encontrados
+#     usecols=["Patrimônio"]
+# )
+# bens_sem_numero = pd.read_excel(
+#     nome_arquivo,
+#     sheet_name="Sem Número",       # ← aba com bens sem número
+#     usecols=["Descrição"]
+# )
+
+# ── OPÇÃO C: Carregar de CSV ───────────────────────────────────────────────────
+# dados_base = pd.read_csv("base.csv")
+# patrimonios_nao_encontrados = pd.read_csv("nao_encontrados.csv")
+# bens_sem_numero = pd.read_csv("sem_numero.csv")
+
+print(f"📦 Base carregada: {len(dados_base)} bens registrados")
+print(f"🔍 Patrimônios não encontrados: {len(patrimonios_nao_encontrados)}")
+print(f"❓ Bens sem número: {len(bens_sem_numero)}")
+dados_base.head()
+
+
+# ── CÉLULA 4: Pré-processamento de texto ──────────────────────────────────────
+
+import re
+
+def normalizar_texto(texto: str) -> str:
+    """Normaliza descrições: lowercase, remove pontuação excessiva,
+    corrige espaços."""
+    if not isinstance(texto, str):
+        return ""
+    texto = texto.lower().strip()
+    texto = re.sub(r"[^\w\s,]", " ", texto)   # mantém vírgulas
+    texto = re.sub(r"\s+", " ", texto)
+    return texto
+
+dados_base["Descrição_norm"] = dados_base["Descrição"].apply(normalizar_texto)
+bens_sem_numero["Descrição_norm"] = bens_sem_numero["Descrição"].apply(normalizar_texto)
+
+print("✅ Textos normalizados!")
+
+
+# ── CÉLULA 5: Geração de embeddings semânticos ────────────────────────────────
+#
+# O modelo 'paraphrase-multilingual-MiniLM-L12-v2' foi escolhido por:
+#   - Suporte nativo a português
+#   - Leve (~120 MB) e rápido no Colab gratuito
+#   - Alta qualidade para similaridade semântica
+# ─────────────────────────────────────────────────────────────────────────────
+
+print("⏳ Carregando modelo de linguagem (pode demorar na 1ª vez)...")
+modelo = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
+print("✅ Modelo carregado!")
+
+print("⏳ Gerando embeddings da base de dados...")
+embeddings_base = modelo.encode(
+    dados_base["Descrição_norm"].tolist(),
+    batch_size=32,
+    show_progress_bar=True,
+    convert_to_numpy=True
+)
+
+print("⏳ Gerando embeddings dos bens sem número...")
+embeddings_sem_numero = modelo.encode(
+    bens_sem_numero["Descrição_norm"].tolist(),
+    batch_size=32,
+    show_progress_bar=True,
+    convert_to_numpy=True
+)
+
+print("✅ Embeddings gerados!")
+print(f"   Dimensão dos vetores: {embeddings_base.shape[1]}")
+
+
+# ── CÉLULA 6: Filtragem — apenas patrimônios não encontrados ──────────────────
+#
+# Só faz sentido sugerir números que realmente estão desaparecidos.
+# ─────────────────────────────────────────────────────────────────────────────
+
+numeros_faltantes = set(patrimonios_nao_encontrados["Patrimônio"].tolist())
+
+# Índices e embeddings apenas dos itens não encontrados
+mask_faltantes = dados_base["Patrimônio"].isin(numeros_faltantes)
+base_filtrada = dados_base[mask_faltantes].reset_index(drop=True)
+embeddings_filtrados = embeddings_base[mask_faltantes.values]
+
+print(f"🎯 Candidatos para matching: {len(base_filtrada)} patrimônios não encontrados")
+base_filtrada
+
+
+# ── CÉLULA 7: Cálculo de similaridade e geração de sugestões ─────────────────
+
+THRESHOLD_MINIMO = 0.60   # Similaridade mínima para aceitar uma sugestão
+TOP_N = 3                 # Número de sugestões por bem sem número
+
+# Matriz de similaridade (bens_sem_numero × patrimônios_nao_encontrados)
+sim_matrix = cosine_similarity(embeddings_sem_numero, embeddings_filtrados)
+
+resultados = []
+
+for i, row_sim in enumerate(sim_matrix):
+    descricao_original = bens_sem_numero.loc[i, "Descrição"]
+
+    # Ordena por similaridade decrescente
+    indices_ordenados = np.argsort(row_sim)[::-1]
+
+    sugestoes = []
+    for rank, idx in enumerate(indices_ordenados[:TOP_N], start=1):
+        score = row_sim[idx]
+        if score < THRESHOLD_MINIMO:
+            break
+        patrimonio = base_filtrada.loc[idx, "Patrimônio"]
+        descricao_base = base_filtrada.loc[idx, "Descrição"]
+        sugestoes.append({
+            "Rank": rank,
+            "Patrimônio_Sugerido": patrimonio,
+            "Similaridade": round(float(score), 4),
+            "Confiança_%": f"{score * 100:.1f}%",
+            "Descrição_na_Base": descricao_base,
+        })
+
+    if not sugestoes:
+        sugestoes.append({
+            "Rank": 1,
+            "Patrimônio_Sugerido": "SEM SUGESTÃO",
+            "Similaridade": 0.0,
+            "Confiança_%": "0.0%",
+            "Descrição_na_Base": "Nenhum patrimônio atingiu o limiar mínimo",
+        })
+
+    for s in sugestoes:
+        resultados.append({
+            "Bem_sem_número (Descrição)": descricao_original,
+            **s
+        })
+
+df_resultados = pd.DataFrame(resultados)
+print("✅ Sugestões geradas!")
+print(f"\n{'='*80}")
+print("RESULTADO — SUGESTÕES DE PATRIMÔNIO")
+print(f"{'='*80}\n")
+print(df_resultados.to_string(index=False))
+
+
+# ── CÉLULA 8: Visualização formatada dos resultados ───────────────────────────
+
+print("\n" + "="*80)
+print("RELATÓRIO DETALHADO DE CORRESPONDÊNCIAS")
+print("="*80)
+
+descricoes_unicas = df_resultados["Bem_sem_número (Descrição)"].unique()
+
+for desc in descricoes_unicas:
+    print(f"\n📋 BEM SEM NÚMERO: \"{desc}\"")
+    print("   Sugestões de patrimônio:")
+    subset = df_resultados[df_resultados["Bem_sem_número (Descrição)"] == desc]
+    for _, linha in subset.iterrows():
+        pat = linha["Patrimônio_Sugerido"]
+        conf = linha["Confiança_%"]
+        desc_base = linha["Descrição_na_Base"]
+        rank = linha["Rank"]
+        emoji = "🥇" if rank == 1 else ("🥈" if rank == 2 else "🥉")
+        print(f"   {emoji} #{rank} — Patrimônio {pat} | Confiança: {conf}")
+        print(f"        Descrição na base: \"{desc_base}\"")
+    print()
+
+
+# ── CÉLULA 9: Exportar resultados para Excel ──────────────────────────────────
+
+from google.colab import files
+
+nome_saida = "sugestoes_patrimonio.xlsx"
+
+with pd.ExcelWriter(nome_saida, engine="openpyxl") as writer:
+
+    # Aba 1: Sugestões completas
+    df_resultados.to_excel(writer, sheet_name="Sugestões", index=False)
+
+    # Aba 2: Apenas a melhor sugestão por bem
+    df_top1 = df_resultados[df_resultados["Rank"] == 1].copy()
+    df_top1.to_excel(writer, sheet_name="Melhor Sugestão", index=False)
+
+    # Aba 3: Base de dados original
+    dados_base[["Patrimônio", "Descrição"]].to_excel(
+        writer, sheet_name="Base de Dados", index=False
+    )
+
+    # Formatação básica
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+
+    for sheet_name in writer.sheets:
+        ws = writer.sheets[sheet_name]
+        # Cabeçalho em negrito e fundo azul
+        header_fill = PatternFill("solid", fgColor="1F4E79")
+        header_font = Font(bold=True, color="FFFFFF")
+        for cell in ws[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center")
+        # Auto-ajuste de colunas
+        for col in ws.columns:
+            max_len = max((len(str(c.value or "")) for c in col), default=10)
+            ws.column_dimensions[get_column_letter(col[0].column)].width = min(max_len + 4, 60)
+
+print(f"✅ Arquivo '{nome_saida}' salvo!")
+files.download(nome_saida)
+
+
+# ── CÉLULA 10 (OPCIONAL): Modo interativo — consulta avulsa ───────────────────
+#
+# Permite digitar uma descrição e ver a sugestão em tempo real.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def sugerir_patrimonio(descricao_consulta: str, top_n: int = 3, threshold: float = 0.50):
+    """
+    Recebe uma descrição de bem e retorna os patrimônios mais prováveis
+    dentre os não encontrados.
+    """
+    desc_norm = normalizar_texto(descricao_consulta)
+    emb_consulta = modelo.encode([desc_norm], convert_to_numpy=True)
+    sims = cosine_similarity(emb_consulta, embeddings_filtrados)[0]
+    indices = np.argsort(sims)[::-1][:top_n]
+
+    print(f"\n🔎 Consulta: \"{descricao_consulta}\"")
+    print("-" * 60)
+    encontrou = False
+    for rank, idx in enumerate(indices, 1):
+        score = sims[idx]
+        if score < threshold:
+            continue
+        encontrou = True
+        pat = base_filtrada.loc[idx, "Patrimônio"]
+        desc_b = base_filtrada.loc[idx, "Descrição"]
+        print(f"  #{rank} Patrimônio {pat} — Confiança: {score*100:.1f}%")
+        print(f"      \"{desc_b}\"")
+    if not encontrou:
+        print("  ⚠️  Nenhuma correspondência acima do limiar mínimo.")
+    print()
+
+# Exemplos de uso:
+sugerir_patrimonio("mesa escritório madeira em L")
+sugerir_patrimonio("notebook dell core i5")
+sugerir_patrimonio("televisão samsung smart 50 polegadas")
